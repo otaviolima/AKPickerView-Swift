@@ -37,6 +37,7 @@ and customize the appearance of labels.
 */
 @objc public protocol AKPickerViewDelegate: UIScrollViewDelegate {
 	@objc optional func pickerView(_ pickerView: AKPickerView, didSelectItem item: Int)
+	@objc optional func pickerView(_ pickerView: AKPickerView, willSelectItem item: Int) -> Int
 	@objc optional func pickerView(_ pickerView: AKPickerView, marginForItem item: Int) -> CGSize
 	@objc optional func pickerView(_ pickerView: AKPickerView, configureLabel label: UILabel, forItem item: Int)
 }
@@ -237,6 +238,13 @@ public class AKPickerView: UIView, UICollectionViewDataSource, UICollectionViewD
 			self.intercepter.delegate = delegate
 		}
 	}
+
+	/// Readwrite. In case of selection redirection it will simulate the scroll and then scroll back to the correct final item
+	public var simulateAnimation = false
+
+	/// Readwrite. If enable will fire a selection notification if the current item is already selected
+	public var alwaysNotify = true
+
 	/// Readwrite. A font which used in NOT selected cells.
 	public lazy var font = UIFont.systemFont(ofSize: 20)
 
@@ -305,6 +313,9 @@ public class AKPickerView: UIView, UICollectionViewDataSource, UICollectionViewD
 		layout.delegate = self
 		return layout
 	}
+
+	/// Private. Keep track of the current item that is being simulated to be selected, if a selection redirection occurred and simulateAnimation flag is true
+	fileprivate var simulatingScrollItem: Int?
 
 	// MARK: - Functions
 	// MARK: View Lifecycle
@@ -421,7 +432,7 @@ public class AKPickerView: UIView, UICollectionViewDataSource, UICollectionViewD
 		self.collectionView.collectionViewLayout.invalidateLayout()
 		self.collectionView.reloadData()
 		if self.dataSource != nil && self.dataSource!.numberOfItemsInPickerView(self) > 0 {
-            self.selectItem(0, animated: false, notifySelection: false)
+			self.selectItem(0, animated: false, notifySelection: false, simulateSelection: true)
 		}
 	}
 
@@ -452,29 +463,43 @@ public class AKPickerView: UIView, UICollectionViewDataSource, UICollectionViewD
 	/**
 	Select a cell whose index is given one and move to it.
 
-	:param: item     An integer value which indicates the index of cell.
-	:param: animated True if the scrolling should be animated, false if it should be immediate.
+	:param: item              An integer value which indicates the index of cell.
+	:param: animated          True if the scrolling should be animated, false if it should be immediate.
 	*/
 	public func selectItem(_ item: Int, animated: Bool = false) {
-		self.selectItem(item, animated: animated, notifySelection: true)
+		self.selectItem(item, animated: animated, notifySelection: true, simulateSelection: false)
 	}
 
 	/**
 	Private. Select a cell whose index is given one and move to it, with specifying whether it calls delegate method.
 
-	:param: item            An integer value which indicates the index of cell.
-	:param: animated        True if the scrolling should be animated, false if it should be immediate.
-	:param: notifySelection True if the delegate method should be called, false if not.
+	:param: item              An integer value which indicates the index of cell.
+	:param: animated          True if the scrolling should be animated, false if it should be immediate.
+	:param: notifySelection   True if the delegate method should be called, false if not.
+	:param: simulateSelection True if selection animation should be simulated (Selects the item but bounces back to previous one if item can't be selected)
 	*/
-	fileprivate func selectItem(_ item: Int, animated: Bool, notifySelection: Bool) {
-		self.collectionView.selectItem(
-			at: IndexPath(item: item, section: 0),
-			animated: animated,
-			scrollPosition: UICollectionViewScrollPosition())
-		self.scrollToItem(item, animated: animated)
-		self.selectedItem = item
-		if notifySelection {
-			self.delegate?.pickerView?(self, didSelectItem: item)
+	fileprivate func selectItem(_ item: Int, animated: Bool, notifySelection: Bool, simulateSelection: Bool) {
+		let selectedItem = self.delegate?.pickerView?(self, willSelectItem: item) ?? self.selectedItem
+		let previousSelectedItem = self.selectedItem
+		self.selectedItem = selectedItem
+
+		if self.simulateAnimation && simulateSelection && selectedItem != item {
+			self.simulatingScrollItem = item
+			self.collectionView.selectItem(
+				at: IndexPath(item: item, section: 0),
+				animated: animated,
+				scrollPosition: UICollectionViewScrollPosition())
+			self.scrollToItem(item, animated: animated)
+		} else {
+			self.simulatingScrollItem = nil
+			self.collectionView.selectItem(
+				at: IndexPath(item: selectedItem, section: 0),
+				animated: animated,
+				scrollPosition: UICollectionViewScrollPosition())
+			self.scrollToItem(selectedItem, animated: animated)
+			if notifySelection && (alwaysNotify || selectedItem != previousSelectedItem) {
+				self.delegate?.pickerView?(self, didSelectItem: selectedItem)
+			}
 		}
 	}
 
@@ -487,7 +512,7 @@ public class AKPickerView: UIView, UICollectionViewDataSource, UICollectionViewD
 		case .flat:
 			let center = self.convert(self.collectionView.center, to: self.collectionView)
 			if let indexPath = self.collectionView.indexPathForItem(at: center) {
-				self.selectItem(indexPath.item, animated: true, notifySelection: true)
+				self.selectItem(indexPath.item, animated: true, notifySelection: true, simulateSelection: false)
 			}
 		case .wheel:
 			if let numberOfItems = self.dataSource?.numberOfItemsInPickerView(self) {
@@ -498,7 +523,7 @@ public class AKPickerView: UIView, UICollectionViewDataSource, UICollectionViewD
 						layout: self.collectionView.collectionViewLayout,
 						sizeForItemAt: indexPath)
 					if self.offsetForItem(i) + cellSize.width / 2 > self.collectionView.contentOffset.x {
-						self.selectItem(i, animated: true, notifySelection: true)
+						self.selectItem(i, animated: true, notifySelection: true, simulateSelection: false)
 						break
 					}
 				}
@@ -574,7 +599,7 @@ public class AKPickerView: UIView, UICollectionViewDataSource, UICollectionViewD
 
 	// MARK: UICollectionViewDelegate
 	public func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-		self.selectItem(indexPath.item, animated: true)
+            self.selectItem(indexPath.item, animated: true, notifySelection: true, simulateSelection: true)
 	}
 
 	// MARK: UIScrollViewDelegate
@@ -591,6 +616,22 @@ public class AKPickerView: UIView, UICollectionViewDataSource, UICollectionViewD
 	}
 
 	public func scrollViewDidScroll(_ scrollView: UIScrollView) {
+		if let simulatedScrollItem = self.simulatingScrollItem {
+			let indexPath = IndexPath(item: simulatedScrollItem, section: 0)
+			let cellSize = self.collectionView(
+				self.collectionView,
+				layout: self.collectionView.collectionViewLayout,
+				sizeForItemAt: indexPath)
+
+			let itemOffSetStart = self.offsetForItem(simulatedScrollItem) + (cellSize.width / 4)
+			let itemOffSetEnd = self.offsetForItem(simulatedScrollItem) + ((cellSize.width / 4) * 3)
+			let desiredMiddleOffset = self.collectionView.contentOffset.x + (cellSize.width / 2)
+
+			if  desiredMiddleOffset >= itemOffSetStart && desiredMiddleOffset <= itemOffSetEnd {
+                self.selectItem(self.selectedItem, animated: true, notifySelection: true, simulateSelection: false)
+			}
+		}
+
 		self.delegate?.scrollViewDidScroll?(scrollView)
 		CATransaction.begin()
 		CATransaction.setValue(kCFBooleanTrue, forKey: kCATransactionDisableActions)
