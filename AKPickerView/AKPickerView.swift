@@ -477,7 +477,7 @@ public class AKPickerView: UIView, UICollectionViewDataSource, UICollectionViewD
 	:param: simulateSelection True if selection animation should be simulated (Selects the item but bounces back to previous one if item can't be selected)
 	*/
 	fileprivate func selectItem(_ item: Int, animated: Bool, notifySelection: Bool, simulateSelection: Bool) {
-		let selectedItem = self.delegate?.pickerView?(self, willSelectItem: item) ?? self.selectedItem
+		let selectedItem = self.delegate?.pickerView?(self, willSelectItem: item) ?? item
 		let previousSelectedItem = self.selectedItem
 		self.selectedItem = selectedItem
 
